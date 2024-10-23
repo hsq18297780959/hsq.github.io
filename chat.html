@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f0f0f0;
+        }
+        .chat-container {
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            height: 100%;
+            max-width: 800px;  /* Adjust as needed */
+            max-height: 600px; /* Adjust as needed */
+            position: relative;
+        }
+        .video-container {
+            position: relative;
+            flex: 1;
+            width: 100%;
+            height: 100%;
+        }
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border: 1px solid #ccc;
+            background-color: #000;
+        }
+        .overlay-container {
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 30%;  /* Adjust size of overlay video */
+            height: 30%; /* Adjust size of overlay video */
+            border: 2px solid #ccc;
+        }
+        #iv2 {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+    </style>
+</head>
+<body>
+<div>
+    <h1>Chat</h1>
+    <input type="text" id="socketUrl" placeholder="Enter socket url">
+    <p>你的 ID: <span id="userIdDisplay"></span></p>
+
+    <input type="text" id="userid" placeholder="Enter your user id">
+    <button id="connectBtn">Connect</button>
+    <button id="openVideoBtn">Open Video</button>
+    <button id="hangUpBtn" style="background-color: red; color: white;">Hang Up</button>
+    <div class="chat-container">
+        <div class="video-container">
+            <video id="iv" autoplay></video>
+            <div class="overlay-container">
+                <video id="iv2" autoplay></video>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let userid = null;
+    let name_list = [];
+    let localStream = null;
+    let pc = null;
+    let socket = null;
+    document.getElementById("connectBtn").addEventListener("click", () => {
+        const targetUserId = document.getElementById("userid").value;
+        if (targetUserId) {
+            cn(targetUserId);
+        }
+    });
+    document.getElementById("openVideoBtn").addEventListener("click", () => {
+        openVideo();
+    });
+    document.getElementById("hangUpBtn").addEventListener("click", () => {
+        hangUp();
+    });
+
+
+        function InitSocket() {
+            const urlParams = new URLSearchParams(window.location.search);
+            console.log(urlParams);
+            const userFromUrl = urlParams.get('user'); // 获取 URL 中的 `user` 参数
+
+            if (userFromUrl) {
+                userid = userFromUrl;
+            } else {
+                userid = Math.round(Math.random() * 1000);
+            }
+            document.getElementById("userIdDisplay").textContent = userid;
+
+
+            socketUrl = "wss://hsq020828.cpolar.top/"+ userid;
+            console.log("Socket URL:", socketUrl);
+            socket = new WebSocket(socketUrl);
+
+            socket.onclose = (e) => console.log("Connection closed:", e.code);
+            socket.onopen = () => console.log("Connection established");
+            socket.onerror = (e) => console.error("Socket error:", e);
+            socket.onmessage = async (event) => {
+                const obj = JSON.parse(event.data);
+                const {type, userId} = obj;
+                if (userId && userId !== userid.toString()) {
+
+                    // 如果目标用户ID不匹配，忽略该消息
+                    return;
+                }
+                let id;
+                try {
+                    if (type === "offer") {
+                        if (pc) {
+                            console.error("PeerConnection already exists!");
+                            return;
+                        }
+                        pc = InitPeerConnection(userid);
+                        const desc = new RTCSessionDescription(obj);
+                        await pc.setRemoteDescription(desc);
+                        const answer = await pc.createAnswer();
+                        await pc.setLocalDescription(answer);
+                        socket.send(JSON.stringify(answer));
+                    } else if (type === "answer") {
+                        if (!pc) {
+                            console.error("PeerConnection does not exist!");
+                            return;
+                        }
+                        const desc = new RTCSessionDescription(obj);
+                        await pc.setRemoteDescription(desc);
+                    } else if (type === "candidate") {
+                        const candidate = new RTCIceCandidate({
+                            sdpMLineIndex: obj.sdpMLineIndex,
+                            sdpMid: obj.sdpMid,
+                            candidate: obj.candidate
+                        });
+                        await pc.addIceCandidate(candidate);
+                    } else if (type === "hangup") {
+                        // Handle hangup
+                        hangUp();
+                        console.log("Received hangup message, call ended.");
+                    } else if (type === "name_list") {
+                        id = obj.your_id;
+                        name_list = obj.data;
+                    }
+                } catch (error) {
+                    console.error("Error handling message:", error);
+                }
+            }
+
+
+
+        }
+        function InitPeerConnection(targetUserId) {
+            let peerconnection = null;
+            try {
+                // 使用 RTCPeerConnection 构造函数
+                peerconnection = window.webkitRTCPeerConnection
+                    ? new window.webkitRTCPeerConnection()
+                    : new RTCPeerConnection();
+            } catch (e) {
+                console.error("Connection failed:", e.message);
+                return null; // 如果创建连接失败，返回 null
+            }
+
+            // 处理 ICE 候选
+            peerconnection.onicecandidate = (evt) => {
+                if (evt.candidate) {
+                    const candidate = {
+                        type: "candidate",
+                        userId: targetUserId,
+                        sdpMid: evt.candidate.sdpMid,
+                        sdpMLineIndex: evt.candidate.sdpMLineIndex,
+                        candidate: evt.candidate.candidate
+                    };
+                    socket.send(JSON.stringify(candidate));
+                }
+            };
+
+            // 添加本地流
+            if (localStream) {
+                localStream.getTracks().forEach(track => {
+                    peerconnection.addTrack(track, localStream);
+                });
+            }
+
+            // 处理远程流
+            peerconnection.ontrack = (event) => {
+                const remoteStream = event.streams[0];
+                document.getElementById("iv2").srcObject = remoteStream;
+                // 可能不需要再调用 play()，因为浏览器通常会自动处理
+            };
+
+            return peerconnection;
+        }
+        function cn(targetUserId) {
+            pc = InitPeerConnection(targetUserId);
+            pc.createOffer()
+                .then((desc) => {
+                    // 创建一个包含 offer 和 userId 的新对象
+                    const offerMessage = {
+                        type: 'offer',
+                        sdp: desc.sdp,
+                        userId: targetUserId
+                    };
+
+                    return pc.setLocalDescription(desc).then(() => {
+                        socket.send(JSON.stringify(offerMessage));
+                    });
+                })
+                .catch((err) => console.error("Create offer failed:", err));
+        }
+        function openVideo() {
+            navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+                .then(stream => {
+                    localStream = stream;
+                    const videoElement = document.getElementById("iv");
+                    videoElement.srcObject = stream;
+                    videoElement.play();
+                })
+                .catch(error => {
+                    console.error("Error accessing media devices.", error);
+                });
+        }
+        function hangUp() {
+
+            if (pc) {
+                // 发送挂断消息到对方
+                const hangUpMessage = JSON.stringify({type: "hangup", userId: this.$route.query.touser});
+                socket.send(hangUpMessage);
+
+                // 关闭 PeerConnection 和 WebSocket
+                pc.close();
+                pc = null;
+
+                if (localStream) {
+                    localStream.getTracks().forEach(track => track.stop());
+                    localStream = null;
+                }
+
+
+                document.getElementById("iv").srcObject = null;
+                document.getElementById("iv2").srcObject = null;
+
+                console.log("Call ended");
+                this.$router.push({name: 'demo', query: {user: this.$route.query.user}});
+            } else {
+                console.log("No active connection to hang up");
+            }
+
+
+    }
+    InitSocket();
+</script>
+</body>
+</html>
