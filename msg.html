@@ -209,7 +209,7 @@
                 // 用户点击“确定”，进行跳转或其他操作
                 ws.send(`CALL||ACCEPT||${user}||${Username}`);
                 // 跳转到视频通话页面
-                window.location.href = `/chat.html?user=${userid}`;
+                window.location.href = `?user=${userid}`;
 
             } else {
                 // 用户点击“取消”，可以添加拒绝的逻辑
@@ -219,7 +219,7 @@
             const [, call] = data;
             this.alert(`${call} 接受了你的视频通话请求`);
             setTimeout(() => {
-                window.location.href = `/chat.html?user=${userid}&touser=${call}`;
+                window.location.href = `?user=${userid}&touser=${call}`;
             }, 900); // 延迟 2000 毫秒 (2 秒)
         }
 
